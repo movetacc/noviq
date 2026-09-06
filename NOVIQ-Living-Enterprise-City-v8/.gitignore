@@ -1,4 +1,0 @@
-.env
-data/*.sqlite
-data/*.db
-node_modules/
