@@ -1,0 +1,29 @@
+{
+  "name": "noviq-living-enterprise-city-v8",
+  "version": "8.0.0",
+  "private": true,
+  "description": "NOVIQ Living Enterprise City v8 \u2014 autonomous business OS with Discord command center",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js",
+    "hash-password": "node scripts/hash-password.js",
+    "setup-2fa": "node scripts/setup-2fa.js",
+    "audit": "npm audit",
+    "discord:register": "node scripts/register-discord-command.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "argon2": "^0.45.1",
+    "dotenv": "^16.4.7",
+    "express": "5.1.0",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
+    "node-cron": "4.2.1",
+    "nodemailer": "^10.0.0",
+    "otplib": "^13.5.0",
+    "sqlite3": "^6.0.1"
+  }
+}
