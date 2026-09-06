@@ -2,7 +2,7 @@
   "name": "noviq-living-enterprise-city-v8",
   "version": "8.0.0",
   "private": true,
-  "description": "NOVIQ Living Enterprise City v8 — autonomous business OS with Discord command center",
+  "description": "NOVIQ Living Enterprise City v8 \u2014 autonomous business OS with Discord command center",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
@@ -24,6 +24,6 @@
     "node-cron": "4.2.1",
     "nodemailer": "^10.0.0",
     "otplib": "^13.5.0",
-    "sqlite3": "^6.0.1"
+    "better-sqlite3": "^11.3.0"
   }
 }
