@@ -19,7 +19,8 @@ jobs:
       
       - name: Move files from folder to root
         run: |
-          # Move all files from the NOVIQ folder to root
+          # Move all files and folders from the NOVIQ folder to root
+          shopt -s dotglob
           mv NOVIQ-Living-Enterprise-City-v8/* .
           # Remove the now-empty folder
           rmdir NOVIQ-Living-Enterprise-City-v8
