@@ -15,14 +15,27 @@ jobs:
       
       - name: Move files from folder to root
         run: |
-          bash -c 'shopt -s dotglob; mv NOVIQ-Living-Enterprise-City-v8/* . && rmdir NOVIQ-Living-Enterprise-City-v8'
+          # Copy all files from the NOVIQ folder to temp location
+          mkdir -p /tmp/noviq_files
+          cp -r NOVIQ-Living-Enterprise-City-v8/* /tmp/noviq_files/
+          cp -r NOVIQ-Living-Enterprise-City-v8/.* /tmp/noviq_files/ 2>/dev/null || true
+          
+          # Remove git tracking and folder
+          rm -rf NOVIQ-Living-Enterprise-City-v8
+          
+          # Move files back to root
+          cp -r /tmp/noviq_files/* .
+          cp -r /tmp/noviq_files/.* . 2>/dev/null || true
+          
+          # Remove ZIP file
+          rm -f NOVIQ-Living-Enterprise-City-v8.zip
       
       - name: Commit changes
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add -A
-          git commit -m "Move files from NOVIQ-Living-Enterprise-City-v8 folder to root"
+          git commit -m "Move files from NOVIQ-Living-Enterprise-City-v8 folder to root, remove archive"
       
       - name: Push changes
         run: |
