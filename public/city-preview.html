@@ -1,0 +1,449 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NOVIQ — City Preview v4</title>
+<style>
+html,body{margin:0;padding:0;background:#05030f;overflow:hidden;font-family:'Courier New',monospace;color:#d6e8ff}
+#canvas-wrap{position:fixed;inset:0}
+.hud{position:absolute;z-index:5;pointer-events:none}
+.badge{top:14px;left:14px;border:1px solid #7ee8ffaa;border-radius:8px;padding:6px 12px;background:#0a0620cc;font-size:11px;letter-spacing:2px;color:#7ee8ff;transition:color .3s,border-color .3s}
+.badge small{display:block;color:#8b7fc9;letter-spacing:1px;font-size:9px;margin-top:2px}
+.stats{top:14px;right:14px;border:1px solid #7ee8ff44;border-radius:8px;padding:8px 14px;background:#0a0620cc;font-size:12px;text-align:right;line-height:1.6}
+.stats .day{color:#c9a8ff;font-size:11px;letter-spacing:1px}
+.acting{color:#79f2b0}.learning{color:#c99dff}.thinking{color:#ffd479}.idle{color:#8fa4bb}.offline{color:#556074}
+.caption{position:absolute;left:50%;bottom:90px;transform:translateX(-50%);z-index:6;max-width:320px;background:#0a0620f0;border:1px solid #ff7ecb55;border-radius:10px;padding:16px 18px;font-size:14px;line-height:1.5;text-align:center;opacity:0;transition:opacity .6s;box-shadow:0 0 30px #ff7ecb22}
+.caption.show{opacity:1}
+.caption .h{letter-spacing:3px;font-size:11px;color:#ff7ecb;margin-bottom:6px}
+.tap-hint{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);font-size:10px;letter-spacing:2px;color:#5a4d75;z-index:5;transition:opacity .3s}
+.back-btn{position:absolute;top:70px;left:14px;z-index:8;border:1px solid #7ee8ff88;border-radius:8px;padding:8px 14px;background:#0a0620dd;color:#7ee8ff;font-size:11px;letter-spacing:2px;font-family:'Courier New',monospace;opacity:0;pointer-events:none;transition:opacity .3s}
+.back-btn.show{opacity:1;pointer-events:auto}
+.worker-label{position:absolute;font-size:9px;letter-spacing:.5px;text-align:center;white-space:nowrap;transform:translate(-50%,-100%);pointer-events:none}
+.worker-label .nm{font-weight:bold}
+.worker-label .st{opacity:.8}
+</style>
+</head>
+<body>
+<div id="canvas-wrap"></div>
+<div class="hud badge" id="badge" style="position:absolute">NOVIQ<small id="badge-sub">AUTONOMOUS CITY · 20 CITIZENS</small></div>
+<div class="hud stats" style="position:absolute" id="stats">
+ <div class="day">DAY 1</div>
+ <div class="acting"><span class="n" id="s-acting">0</span> acting</div>
+ <div class="learning"><span class="n" id="s-learning">0</span> learning</div>
+ <div class="thinking"><span class="n" id="s-thinking">0</span> thinking</div>
+ <div class="idle"><span class="n" id="s-idle">0</span> idle</div>
+ <div class="offline"><span class="n" id="s-offline">0</span> offline</div>
+</div>
+<div class="caption" id="caption"><div class="h" id="cap-title"></div><div id="cap-body"></div></div>
+<div class="tap-hint" id="tap-hint">TAP A BUILDING</div>
+<button class="back-btn" id="back-btn">&larr; BACK TO CITY</button>
+<div id="worker-labels" style="position:absolute;inset:0;pointer-events:none;z-index:4"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+<script>
+const STATUS = ['acting','learning','idle'];
+const STATUS_COLOR = {acting:0x79f2b0, learning:0xc99dff, idle:0x8fa4bb};
+
+const ventures = [
+ {name:'Xcessories Shop', desc:'E-commerce storefront.', color:0x7ee8ff, h:2.8,
+  agents:[{name:'DAX',role:'Listings',status:'acting'},{name:'MERI',role:'Pricing',status:'acting'},{name:'ORIN',role:'Support',status:'learning'},{name:'FYN',role:'Inventory',status:'idle'}]},
+ {name:'Lumiara', desc:'Custom LED signs.', color:0xc99dff, h:4.0,
+  agents:[{name:'GLOW',role:'Design',status:'acting'},{name:'PRISM',role:'Quoting',status:'learning'},{name:'NEON',role:'Production',status:'acting'}]},
+ {name:'Content City', desc:'Faceless channels.', color:0xff7ecb, h:5.2,
+  agents:[{name:'SCRIPT',role:'Writer',status:'acting'},{name:'HOOK',role:'Research',status:'acting'},{name:'VOX',role:'Voice',status:'acting'},{name:'CUT',role:'Editor',status:'learning'},{name:'THUMB',role:'Thumbnails',status:'acting'},{name:'SEO',role:'Optimizer',status:'idle'}]},
+ {name:'Wholesale RE', desc:'Property leads.', color:0x79f2b0, h:2.0,
+  agents:[{name:'DEED',role:'Research',status:'learning'},{name:'QUAL',role:'Qualifier',status:'idle'}]},
+ {name:'Crypto Desk', desc:'Trading signals.', color:0xffd479, h:1.6,
+  agents:[{name:'TICK',role:'Signals',status:'acting'},{name:'RISK',role:'Risk',status:'idle'}]},
+ {name:'The Academy', desc:'Every agent trains here.', color:0x7ee8ff, h:2.5,
+  agents:[{name:'TEACH',role:'Trainer',status:'acting'}]},
+ {name:'Supply Shop', desc:'Vendor pipeline.', color:0xff9d5c, h:1.3,
+  agents:[{name:'CRATE',role:'Sourcing',status:'learning'},{name:'HAUL',role:'Logistics',status:'acting'}]},
+ {name:'Control Room', desc:'Certified agents oversee the rest.', color:0xff7ecb, h:3.3,
+  agents:[{name:'CINDER',role:'Overseer',status:'acting'}]}
+];
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x05030f, 0.05);
+
+const aspect = window.innerWidth/window.innerHeight;
+const D = 10;
+const camera = new THREE.OrthographicCamera(-D*aspect,D*aspect,D,-D,0.1,100);
+const CITY_POS = new THREE.Vector3(11,10,11);
+const CITY_TARGET = new THREE.Vector3(0,0,0);
+camera.position.copy(CITY_POS);
+camera.lookAt(CITY_TARGET);
+
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio||1));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+document.getElementById('canvas-wrap').appendChild(renderer.domElement);
+
+const composer = new THREE.EffectComposer(renderer);
+composer.addPass(new THREE.RenderPass(scene, camera));
+const bloom = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth,window.innerHeight), 1.15, 0.55, 0.15);
+composer.addPass(bloom);
+
+const gridSize = 22, gridDiv = 22;
+const grid = new THREE.GridHelper(gridSize, gridDiv, 0x9d7fff, 0x2a1a55);
+grid.material.opacity = 0.3; grid.material.transparent = true;
+scene.add(grid);
+
+const nodesGeo = new THREE.BufferGeometry();
+const nodePositions = [], step = gridSize/gridDiv;
+for(let x=-gridSize/2;x<=gridSize/2;x+=step) for(let z=-gridSize/2;z<=gridSize/2;z+=step) nodePositions.push(x,0.02,z);
+nodesGeo.setAttribute('position', new THREE.Float32BufferAttribute(nodePositions,3));
+const nodesMat = new THREE.PointsMaterial({color:0xc9a8ff, size:0.06, transparent:true, opacity:0.9});
+scene.add(new THREE.Points(nodesGeo, nodesMat));
+
+scene.add(new THREE.AmbientLight(0x5533aa, 0.6));
+const dl = new THREE.DirectionalLight(0xffffff,0.4);
+dl.position.set(5,10,5);
+scene.add(dl);
+
+const buildingGroup = new THREE.Group();
+const labelWrap = document.getElementById('worker-labels');
+const positions = [[-4.5,-2.5],[-1.8,-3.8],[2.2,-1.8],[-3.5,2.2],[0.6,3.2],[3.8,1.2],[-6,0.5],[5.5,-0.5]];
+const buildingMeshes = [];
+
+function hexTile(){
+ const c=document.createElement('canvas'); c.width=128;c.height=128;
+ const ctx=c.getContext('2d');
+ ctx.fillStyle='#1a1230'; ctx.fillRect(0,0,128,128);
+ ctx.strokeStyle='#ffb35688'; ctx.lineWidth=2;
+ for(let y=0;y<160;y+=28){for(let x=0;x<160;x+=48){
+  const off=(Math.floor(y/28)%2)*24;
+  ctx.beginPath();
+  const cx=x+off, cy=y;
+  for(let i=0;i<6;i++){const a=Math.PI/3*i; const px=cx+20*Math.cos(a), py=cy+20*Math.sin(a); i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);}
+  ctx.closePath(); ctx.stroke();
+ }}
+ const tex=new THREE.CanvasTexture(c);
+ tex.wrapS=tex.wrapT=THREE.RepeatWrapping;
+ return tex;
+}
+const hexTex = hexTile();
+
+function makeWindowTexture(color){
+ const c = document.createElement('canvas'); c.width=64; c.height=64;
+ const ctx = c.getContext('2d');
+ ctx.fillStyle = '#050310'; ctx.fillRect(0,0,64,64);
+ const hex = '#'+color.toString(16).padStart(6,'0');
+ ctx.fillStyle = hex;
+ for(let r=0;r<8;r++) for(let cc=0;cc<8;cc++){
+  if(Math.random()>0.45){ ctx.globalAlpha = 0.4+Math.random()*0.6; ctx.fillRect(cc*8+1,r*8+1,5,5); }
+ }
+ ctx.globalAlpha=1;
+ return new THREE.CanvasTexture(c);
+}
+
+ventures.forEach((v,i)=>{
+ const [px,pz] = positions[i];
+ const w=1.3,depth=1.3,h=v.h;
+ const geo = new THREE.BoxGeometry(w,h,depth);
+ const tex = makeWindowTexture(v.color);
+ tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+ tex.repeat.set(1,Math.max(1,Math.round(h)));
+ const mat = new THREE.MeshBasicMaterial({map:tex, transparent:true, opacity:0.85});
+ const mesh = new THREE.Mesh(geo,mat);
+ mesh.position.set(px, h/2, pz);
+ mesh.userData = v;
+ buildingGroup.add(mesh);
+ buildingMeshes.push(mesh);
+ v._mesh = mesh;
+
+ const edges = new THREE.EdgesGeometry(geo);
+ const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({color:v.color}));
+ line.position.copy(mesh.position);
+ buildingGroup.add(line);
+ v._edges = line;
+
+ const ringGeo = new THREE.RingGeometry(0.95,1.12,32);
+ const ringMat = new THREE.MeshBasicMaterial({color:v.color, transparent:true, opacity:0.35, side:THREE.DoubleSide});
+ const ring = new THREE.Mesh(ringGeo, ringMat);
+ ring.rotation.x = -Math.PI/2;
+ ring.position.set(px,0.03,pz);
+ buildingGroup.add(ring);
+
+ const label = document.createElement('div');
+ label.textContent = v.name;
+ const hexc = '#'+v.color.toString(16).padStart(6,'0');
+ label.style.cssText = `position:absolute;font-size:10px;letter-spacing:1px;color:${hexc};text-shadow:0 0 8px ${hexc};white-space:nowrap;transform:translate(-50%,-100%)`;
+ labelWrap.appendChild(label);
+ v._label = label;
+ v._anchor = new THREE.Vector3(px, h+0.5, pz);
+ v._pos = [px,pz];
+
+ // ── interior group (hidden until entered) ──
+ const interior = new THREE.Group();
+ interior.visible = false;
+ const floorMat = new THREE.MeshBasicMaterial({map:hexTex});
+ const floor = new THREE.Mesh(new THREE.PlaneGeometry(3.2,3.2), floorMat);
+ floor.rotation.x = -Math.PI/2;
+ interior.add(floor);
+
+ const wallMat = new THREE.LineBasicMaterial({color:v.color});
+ const wallShape = [
+  [-1.6,0,-1.6],[1.6,0,-1.6],[1.6,1.8,-1.6],[-1.6,1.8,-1.6],[-1.6,0,-1.6],
+  [-1.6,0,1.6],[-1.6,1.8,1.6],[-1.6,1.8,-1.6]
+ ];
+ const wallGeo = new THREE.BufferGeometry().setFromPoints(wallShape.map(p=>new THREE.Vector3(...p)));
+ interior.add(new THREE.Line(wallGeo, wallMat));
+
+ v._deskLabels = [];
+ const cols = Math.min(3, v.agents.length);
+ v.agents.forEach((a,ai)=>{
+  const col = ai % cols, row = Math.floor(ai/cols);
+  const dx = -1.0 + col*1.0, dz = -0.4 + row*0.9;
+  const desk = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.22,0.32), new THREE.MeshBasicMaterial({color:0x2a2440}));
+  desk.position.set(dx,0.11,dz);
+  interior.add(desk);
+  const bodyCol = STATUS_COLOR[a.status]||0x8fa4bb;
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.13,0.32,8), new THREE.MeshBasicMaterial({color:bodyCol}));
+  body.position.set(dx,0.32,dz-0.28);
+  interior.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.11,10,10), new THREE.MeshBasicMaterial({color:bodyCol}));
+  head.position.set(dx,0.55,dz-0.28);
+  interior.add(head);
+
+  const lbl = document.createElement('div');
+  lbl.className = 'worker-label';
+  lbl.innerHTML = `<div class="nm">${a.name}</div><div class="st">${a.role} · ${a.status}</div>`;
+  lbl.style.color = '#'+bodyCol.toString(16).padStart(6,'0');
+  labelWrap.appendChild(lbl);
+  v._deskLabels.push({el:lbl, anchor:new THREE.Vector3(dx,0.85,dz-0.28)});
+ });
+
+ const roomLbl = document.createElement('div');
+ roomLbl.textContent = v.name.toUpperCase();
+ roomLbl.style.cssText = `position:absolute;font-size:11px;letter-spacing:2px;color:${hexc};text-shadow:0 0 8px ${hexc};white-space:nowrap;transform:translate(-50%,-100%);font-weight:bold`;
+ labelWrap.appendChild(roomLbl);
+ v._roomLabel = roomLbl;
+ v._roomAnchor = new THREE.Vector3(0,2.0,-1.6);
+
+ interior.position.set(px,0,pz);
+ scene.add(interior);
+ v._interior = interior;
+});
+scene.add(buildingGroup);
+
+const orbGroup = new THREE.Group();
+const orbColors = [0xff7ecb,0x7ee8ff,0x79f2b0,0xc99dff,0xffd479];
+const orbs = [];
+for(let i=0;i<16;i++){
+ const col = orbColors[i%orbColors.length];
+ const orb = new THREE.Mesh(new THREE.SphereGeometry(0.09,10,10), new THREE.MeshBasicMaterial({color:col}));
+ const ang = Math.random()*Math.PI*2, rad = 3+Math.random()*7;
+ orb.position.set(Math.cos(ang)*rad, 0.4+Math.random()*0.6, Math.sin(ang)*rad);
+ orbGroup.add(orb);
+ orbs.push({mesh:orb, t:Math.random()*10, baseY:orb.position.y});
+}
+scene.add(orbGroup);
+
+const agentGroup = new THREE.Group();
+const cityAgents = [];
+for(let i=0;i<14;i++){
+ const dot = new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8), new THREE.MeshBasicMaterial({color:0x79f2b0}));
+ const [px,pz] = positions[i % positions.length];
+ dot.position.set(px + (Math.random()-0.5)*2, 0.1, pz + (Math.random()-0.5)*2);
+ agentGroup.add(dot);
+ cityAgents.push({mesh:dot, t:Math.random()*10, speed:0.3+Math.random()*0.3, base:[px,pz]});
+}
+scene.add(agentGroup);
+
+// ── state machine: city <-> inside a building ──
+let mode = 'city'; // 'city' | 'entering' | 'inside' | 'leaving'
+let activeVenture = null;
+let tweenT = 0;
+const TWEEN_MS = 1100;
+let tweenStart = {pos:new THREE.Vector3(), zoom:D};
+let tweenEnd = {pos:new THREE.Vector3(), zoom:D};
+let camZoom = D;
+
+function setOrthoZoom(z){
+ const a = window.innerWidth/window.innerHeight;
+ camera.left=-z*a; camera.right=z*a; camera.top=z; camera.bottom=-z;
+ camera.updateProjectionMatrix();
+}
+
+function enterBuilding(v){
+ if(mode!=='city') return;
+ activeVenture = v;
+ mode = 'entering';
+ tweenT = 0;
+ tweenStart.pos.copy(camera.position);
+ tweenStart.zoom = camZoom;
+ const [px,pz] = v._pos;
+ tweenEnd.pos.set(px+3.2, 1.6, pz+3.2);
+ tweenEnd.zoom = 3.4;
+ v._mesh.visible = false;
+ v._edges.visible = false;
+ v._interior.visible = true;
+ document.getElementById('tap-hint').style.opacity = '0';
+ document.getElementById('back-btn').classList.add('show');
+ document.getElementById('badge-sub').textContent = `FLOOR BAND · ${v.agents.length} CITIZENS`;
+ document.getElementById('badge').style.color = '#'+v.color.toString(16).padStart(6,'0');
+}
+function leaveBuilding(){
+ if(mode!=='inside') return;
+ mode = 'leaving';
+ tweenT = 0;
+ tweenStart.pos.copy(camera.position);
+ tweenStart.zoom = camZoom;
+ tweenEnd.pos.copy(CITY_POS);
+ tweenEnd.zoom = D;
+}
+document.getElementById('back-btn').addEventListener('click', leaveBuilding);
+
+function updateLabels(){
+ ventures.forEach(v=>{
+  if(mode==='city' || mode==='entering' || mode==='leaving'){
+   const p = v._anchor.clone().project(camera);
+   v._label.style.display='block';
+   v._label.style.left = ((p.x*0.5+0.5)*window.innerWidth)+'px';
+   v._label.style.top = ((1-(p.y*0.5+0.5))*window.innerHeight)+'px';
+  } else {
+   v._label.style.display='none';
+  }
+  if(v._interior.visible){
+   const rp = v._roomAnchor.clone().add(v._interior.position).project(camera);
+   v._roomLabel.style.display='block';
+   v._roomLabel.style.left = ((rp.x*0.5+0.5)*window.innerWidth)+'px';
+   v._roomLabel.style.top = ((1-(rp.y*0.5+0.5))*window.innerHeight)+'px';
+   v._deskLabels.forEach(d=>{
+    const wp = d.anchor.clone().add(v._interior.position).project(camera);
+    d.el.style.display='block';
+    d.el.style.left = ((wp.x*0.5+0.5)*window.innerWidth)+'px';
+    d.el.style.top = ((1-(wp.y*0.5+0.5))*window.innerHeight)+'px';
+   });
+  } else {
+   v._roomLabel.style.display='none';
+   v._deskLabels.forEach(d=>d.el.style.display='none');
+  }
+ });
+}
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+function showCaption(title, body){
+ document.getElementById('cap-title').textContent = title;
+ document.getElementById('cap-body').textContent = body;
+ const c = document.getElementById('caption');
+ c.classList.add('show');
+ clearTimeout(c._t);
+ c._t = setTimeout(()=>c.classList.remove('show'), 4200);
+}
+function onTap(e){
+ if(mode!=='city') return;
+ const t = e.touches ? e.touches[0] : e;
+ mouse.x = (t.clientX/window.innerWidth)*2-1;
+ mouse.y = -(t.clientY/window.innerHeight)*2+1;
+ raycaster.setFromCamera(mouse, camera);
+ const hits = raycaster.intersectObjects(buildingMeshes);
+ if(hits.length){
+  enterBuilding(hits[0].object.userData);
+ }
+}
+renderer.domElement.addEventListener('click', onTap);
+renderer.domElement.addEventListener('touchstart', onTap, {passive:true});
+
+function randomizeStats(){
+ let acting=0,learning=0,idle=0;
+ ventures.forEach(v=>v.agents.forEach(a=>{ if(a.status==='acting')acting++; else if(a.status==='learning')learning++; else idle++; }));
+ document.getElementById('s-acting').textContent = acting;
+ document.getElementById('s-learning').textContent = learning;
+ document.getElementById('s-thinking').textContent = 0;
+ document.getElementById('s-idle').textContent = idle;
+ document.getElementById('s-offline').textContent = 0;
+}
+randomizeStats();
+
+const captions = [
+ ['SYSTEM', 'Then I let them run it.'],
+ ['THE ACADEMY', 'They train here to upgrade their own skills.'],
+ ['WEEK 1', 'Now I just watch it grow.']
+];
+let capIdx = 0;
+function cycleCaptions(){
+ if(mode==='city'){ showCaption(...captions[capIdx]); capIdx=(capIdx+1)%captions.length; }
+}
+setTimeout(cycleCaptions, 1200);
+setInterval(cycleCaptions, 7000);
+
+let cityAngle = Math.atan2(CITY_POS.z, CITY_POS.x);
+function easeInOutCubic(x){ return x<0.5 ? 4*x*x*x : 1-Math.pow(-2*x+2,3)/2; }
+
+function animate(time, dt){
+ requestAnimationFrame(animate);
+
+ if(mode==='entering' || mode==='leaving'){
+  tweenT += 16;
+  const p = Math.min(1, tweenT/TWEEN_MS);
+  const e = easeInOutCubic(p);
+  const pos = tweenStart.pos.clone().lerp(tweenEnd.pos, e);
+  camera.position.copy(pos);
+  camZoom = tweenStart.zoom + (tweenEnd.zoom-tweenStart.zoom)*e;
+  setOrthoZoom(camZoom);
+  if(mode==='entering'){
+   camera.lookAt(new THREE.Vector3(activeVenture._pos[0], 0.7, activeVenture._pos[1]));
+  } else {
+   camera.lookAt(CITY_TARGET);
+  }
+  if(p>=1){
+   if(mode==='entering'){ mode='inside'; }
+   else {
+    mode='city';
+    activeVenture._mesh.visible=true;
+    activeVenture._edges.visible=true;
+    activeVenture._interior.visible=false;
+    activeVenture=null;
+    document.getElementById('tap-hint').style.opacity='1';
+    document.getElementById('back-btn').classList.remove('show');
+    document.getElementById('badge-sub').textContent='AUTONOMOUS CITY · 20 CITIZENS';
+    document.getElementById('badge').style.color='#7ee8ff';
+   }
+  }
+ } else if(mode==='city'){
+  cityAngle += 0.0006;
+  const r = Math.sqrt(CITY_POS.x*CITY_POS.x+CITY_POS.z*CITY_POS.z);
+  camera.position.x = Math.cos(cityAngle)*r;
+  camera.position.z = Math.sin(cityAngle)*r;
+  camera.position.y = CITY_POS.y;
+  camera.lookAt(CITY_TARGET);
+ } else if(mode==='inside' && activeVenture){
+  camera.lookAt(new THREE.Vector3(activeVenture._pos[0], 0.7, activeVenture._pos[1]));
+ }
+
+ cityAgents.forEach(a=>{
+  a.t += 0.008*a.speed;
+  a.mesh.position.x = a.base[0] + Math.sin(a.t)*1.1;
+  a.mesh.position.z = a.base[1] + Math.cos(a.t*0.8)*1.1;
+  a.mesh.position.y = 0.1 + Math.abs(Math.sin(a.t*2))*0.05;
+  a.mesh.visible = (mode==='city');
+ });
+ orbs.forEach(o=>{ o.t += 0.01; o.mesh.position.y = o.baseY + Math.sin(o.t)*0.25; o.mesh.visible = (mode!=='inside'); });
+ nodesMat.opacity = 0.6 + Math.sin((time||0)*0.001)*0.25;
+ grid.visible = (mode!=='inside');
+
+ updateLabels();
+ composer.render();
+}
+requestAnimationFrame(animate);
+
+window.addEventListener('resize', ()=>{
+ setOrthoZoom(camZoom);
+ renderer.setSize(window.innerWidth, window.innerHeight);
+ composer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
