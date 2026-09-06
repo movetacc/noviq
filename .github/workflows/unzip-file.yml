@@ -1,0 +1,33 @@
+name: Unzip and Clean Up
+
+on:
+  workflow_dispatch:
+
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Unzip file
+        run: |
+          unzip NOVIQ-Living-Enterprise-City-v8.zip -d .
+      
+      - name: Remove ZIP file
+        run: |
+          rm NOVIQ-Living-Enterprise-City-v8.zip
+      
+      - name: Commit changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add -A
+          git commit -m "Extract NOVIQ-Living-Enterprise-City-v8.zip and remove archive"
+      
+      - name: Push changes
+        run: |
+          git push
