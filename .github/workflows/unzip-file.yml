@@ -1,10 +1,10 @@
-name: Unzip and Clean Up
+name: Unzip, Move Files, and Clean Up
 
 on:
   workflow_dispatch:
 
 jobs:
-  unzip:
+  unzip-and-move:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -17,6 +17,13 @@ jobs:
         run: |
           unzip NOVIQ-Living-Enterprise-City-v8.zip -d .
       
+      - name: Move files from folder to root
+        run: |
+          # Move all files from the NOVIQ folder to root
+          mv NOVIQ-Living-Enterprise-City-v8/* .
+          # Remove the now-empty folder
+          rmdir NOVIQ-Living-Enterprise-City-v8
+      
       - name: Remove ZIP file
         run: |
           rm NOVIQ-Living-Enterprise-City-v8.zip
@@ -26,7 +33,7 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add -A
-          git commit -m "Extract NOVIQ-Living-Enterprise-City-v8.zip and remove archive"
+          git commit -m "Extract and move files from NOVIQ-Living-Enterprise-City-v8 folder to root, remove archive"
       
       - name: Push changes
         run: |
