@@ -13,30 +13,40 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
       
-      - name: Move files from folder to root
+      - name: Move files using Python
         run: |
-          # Copy all files from the NOVIQ folder to temp location
-          mkdir -p /tmp/noviq_files
-          cp -r NOVIQ-Living-Enterprise-City-v8/* /tmp/noviq_files/
-          cp -r NOVIQ-Living-Enterprise-City-v8/.* /tmp/noviq_files/ 2>/dev/null || true
+          import os
+          import shutil
           
-          # Remove git tracking and folder
-          rm -rf NOVIQ-Living-Enterprise-City-v8
+          source_dir = "NOVIQ-Living-Enterprise-City-v8"
           
-          # Move files back to root
-          cp -r /tmp/noviq_files/* .
-          cp -r /tmp/noviq_files/.* . 2>/dev/null || true
+          # Copy all files and folders to root
+          for item in os.listdir(source_dir):
+              src = os.path.join(source_dir, item)
+              dst = item
+              
+              if os.path.isdir(src):
+                  if os.path.exists(dst):
+                      shutil.rmtree(dst)
+                  shutil.copytree(src, dst)
+              else:
+                  shutil.copy2(src, dst)
+          
+          # Remove the original folder
+          shutil.rmtree(source_dir)
           
           # Remove ZIP file
-          rm -f NOVIQ-Living-Enterprise-City-v8.zip
+          if os.path.exists("NOVIQ-Living-Enterprise-City-v8.zip"):
+              os.remove("NOVIQ-Living-Enterprise-City-v8.zip")
+        shell: python
       
       - name: Commit changes
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add -A
-          git commit -m "Move files from NOVIQ-Living-Enterprise-City-v8 folder to root, remove archive"
+          git commit -m "Move files from NOVIQ-Living-Enterprise-City-v8 folder to root" || echo "No changes to commit"
       
       - name: Push changes
         run: |
-          git push
+          git push origin main || echo "Nothing to push"
