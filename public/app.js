@@ -1,6 +1,34 @@
 let state=null;
 let pendingAuthPrompt=false;
 
+// ── On-page toast + modal (replaces native alert/prompt, which are unreliable
+// on mobile Safari — easy to miss, and blocked entirely in some Home Screen /
+// standalone contexts). Every action now shows a visible on-page result. ──
+function toast(msg,kind=''){
+ const t=document.querySelector('#toast');
+ t.textContent=msg;
+ t.className='toast'+(kind?' '+kind:'');
+ t.hidden=false;
+ clearTimeout(t._timer);
+ if(kind!=='busy') t._timer=setTimeout(()=>{t.hidden=true},7000);
+}
+function hideToast(){ const t=document.querySelector('#toast'); t.hidden=true; }
+function modalPrompt(title,defaultValue=''){
+ return new Promise(resolve=>{
+  const overlay=document.querySelector('#modal-overlay');
+  const input=document.querySelector('#modal-input');
+  document.querySelector('#modal-title').textContent=title;
+  input.value=defaultValue;
+  overlay.hidden=false;
+  setTimeout(()=>input.focus(),50);
+  const ok=document.querySelector('#modal-ok'), cancel=document.querySelector('#modal-cancel');
+  const cleanup=(val)=>{ overlay.hidden=true; ok.onclick=null; cancel.onclick=null; input.onkeydown=null; resolve(val); };
+  ok.onclick=()=>cleanup(input.value);
+  cancel.onclick=()=>cleanup(null);
+  input.onkeydown=(e)=>{ if(e.key==='Enter') cleanup(input.value); if(e.key==='Escape') cleanup(null); };
+ });
+}
+
 async function api(u,o={}){
  const r=await fetch(u,{headers:{'Content-Type':'application/json',...(o.headers||{})},...o});
  if(r.status===401){
@@ -9,19 +37,33 @@ async function api(u,o={}){
   try{ await login(); }finally{ pendingAuthPrompt=false; }
   return api(u,o);
  }
- if(r.status===429){ alert('Too many requests — slow down and try again shortly.'); throw new Error('rate_limited'); }
+ if(r.status===429){ toast('Too many requests — slow down and try again shortly.','error'); throw new Error('rate_limited'); }
  return r.json();
 }
 async function login(){
- const p=prompt('NOVIQ owner password');
+ const p=await modalPrompt('NOVIQ owner password');
  if(p===null) throw new Error('Login cancelled');
  let body={password:p};
- const t=prompt('2FA code (leave blank if not enabled)');
+ const t=await modalPrompt('2FA code (leave blank if not enabled)');
  if(t) body.totp=t;
  const x=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  if(!x.ok){ const e=await x.json().catch(()=>({})); throw new Error(e.error||'Login failed'); }
 }
 async function logout(){ await fetch('/api/logout',{method:'POST'}); location.reload(); }
+
+// Wrap every button action so network errors, cold starts, and API-level
+// {error:...} responses all surface as a visible toast instead of silence.
+function withStatus(fn,busyMsg='Working…'){
+ return async(...args)=>{
+  toast(busyMsg,'busy');
+  try{
+   const r=await fn(...args);
+   return r;
+  }catch(e){
+   toast(String(e.message||e),'error');
+  }
+ };
+}
 
 async function load(){
  try{
@@ -62,60 +104,90 @@ async function approvals(){
  const a=await api('/api/approvals');
  return a.length?a.map(x=>`<div class="card"><b>${x.action}</b> — ${x.title}<br><button data-action="decide" data-id="${x.id}" data-decision="approve">APPROVE</button> <button data-action="decide" data-id="${x.id}" data-decision="reject">REJECT</button></div>`).join(''):'No pending approvals.';
 }
-async function decide(id,d){ await api('/api/approvals/'+id,{method:'POST',body:JSON.stringify({decision:d})}); load(); }
-async function control(a){ await api('/api/control',{method:'POST',body:JSON.stringify({action:a})}); load(); }
+async function decide(id,d){
+ const r=await api('/api/approvals/'+id,{method:'POST',body:JSON.stringify({decision:d})});
+ toast(r.error?r.error:`Decision recorded: ${d}`,r.error?'error':'');
+ load();
+}
+async function control(a){
+ const r=await api('/api/control',{method:'POST',body:JSON.stringify({action:a})});
+ toast(r.error?r.error:`${a.toUpperCase()} complete.`,r.error?'error':'');
+ load();
+}
 async function goal(){
- const g=prompt('CEO goal','Generate $1,000 in legitimate revenue from the service offer in the next 30 days.');
- if(g) await api('/api/goals',{method:'POST',body:JSON.stringify({goal:g})});
+ const g=await modalPrompt('CEO goal','Generate $1,000 in legitimate revenue from the service offer in the next 30 days.');
+ if(!g) return;
+ const r=await api('/api/goals',{method:'POST',body:JSON.stringify({goal:g})});
+ toast(r.error?r.error:'Goal set.',r.error?'error':'');
  load();
 }
 async function importLeads(){
- const s=prompt('Paste a JSON array of leads.');
+ const s=await modalPrompt('Paste a JSON array of leads.');
  if(!s) return;
- await api('/api/leads/import',{method:'POST',body:JSON.stringify({leads:JSON.parse(s)})});
+ let parsed;
+ try{ parsed=JSON.parse(s); }catch{ toast('That wasn\u2019t valid JSON — check the format and try again.','error'); return; }
+ const r=await api('/api/leads/import',{method:'POST',body:JSON.stringify({leads:parsed})});
+ toast(r.error?r.error:'Leads imported.',r.error?'error':'');
  load();
 }
 async function discover(){
- const q=prompt('Business search query','roofing companies in my area');
+ const q=await modalPrompt('Business search query','roofing companies in my area');
  if(!q) return;
  const r=await api('/api/discover',{method:'POST',body:JSON.stringify({query:q})});
- alert(JSON.stringify(r));
+ toast(r.error?r.error:`Found ${r.found||0}, added ${r.added||0} new lead(s).`,r.error?'error':'');
  load();
 }
 async function moneyStart(){
- const q=prompt('Target businesses','roofing companies in my area');
+ const q=await modalPrompt('Target businesses','roofing companies in my area');
+ if(q===null) return;
  const r=await api('/api/money/start',{method:'POST',body:JSON.stringify({query:q})});
- alert(r.ok?'Money engine queued. NOVIQ will discover → enrich → prepare → follow up.':r.error);
+ toast(r.ok?'Money engine queued. NOVIQ will discover → enrich → prepare → follow up.':(r.error||'Failed to start.'),r.ok?'':'error');
  load();
 }
 async function campaign(){
  const offers=await api('/api/offers');
+ if(!offers.length){ toast('No offers configured yet.','error'); return; }
  const r=await api('/api/outreach/prepare',{method:'POST',body:JSON.stringify({offer_id:offers[0].id})});
- alert(JSON.stringify(r));
+ toast(r.error?r.error:`Outreach scheduled for ${r.scheduled??0} lead(s) (${r.enriched??0} enriched).`,r.error?'error':'');
  load();
 }
 async function payment(){
  const offers=await api('/api/offers');
+ if(!offers.length){ toast('No offers configured yet.','error'); return; }
  const leads=await api('/api/leads');
  const lid=leads.find(x=>x.email)?.id;
- if(!lid){ alert('Need a lead with an email first.'); return; }
+ if(!lid){ toast('Need a lead with an email first.','error'); return; }
  const r=await api('/api/payment-link',{method:'POST',body:JSON.stringify({offer_id:offers[0].id,lead_id:lid})});
- alert(r.url||r.error);
+ toast(r.url||r.error||'Failed to create link.',r.url?'':'error');
  load();
 }
 async function testConnections(){
  const r=await api('/api/test-connections');
  document.querySelector('#connections').textContent=JSON.stringify(r,null,2);
+ const missing=Object.entries(r).filter(([,v])=>!v).map(([k])=>k);
+ toast(missing.length?`Not yet configured: ${missing.join(', ')}`:'All connections configured.',missing.length?'error':'');
 }
 async function scanIntelligence(){
  const r=await api('/api/intelligence/scan',{method:'POST'});
- alert(r.ok?`Scan complete — ${r.signalCount||0} new signal(s) logged.`:r.error);
+ toast(r.ok?`Scan complete — ${r.signalCount||0} new signal(s) logged.`:(r.error||'Scan failed.'),r.ok?'':'error');
  load();
 }
 
-const ACTIONS={moneyStart,discover,goal,importLeads,campaign,payment,testConnections,scanIntelligence,logout,
- stop:()=>control('stop'), resume:()=>control('resume'), cycle:()=>control('cycle'),
- decide:(el)=>decide(el.dataset.id,el.dataset.decision)};
+const ACTIONS={
+ moneyStart:withStatus(moneyStart,'Starting money engine…'),
+ discover:withStatus(discover,'Searching for leads…'),
+ goal:withStatus(goal,'Setting goal…'),
+ importLeads:withStatus(importLeads,'Importing leads…'),
+ campaign:withStatus(campaign,'Preparing outreach…'),
+ payment:withStatus(payment,'Creating payment link…'),
+ testConnections:withStatus(testConnections,'Testing connections…'),
+ scanIntelligence:withStatus(scanIntelligence,'Scanning for trends…'),
+ logout,
+ stop:withStatus(()=>control('stop'),'Stopping…'),
+ resume:withStatus(()=>control('resume'),'Resuming…'),
+ cycle:withStatus(()=>control('cycle'),'Running cycle — this can take up to a minute…'),
+ decide:withStatus((el)=>decide(el.dataset.id,el.dataset.decision),'Recording decision…')
+};
 
 document.addEventListener('click',e=>{
  const el=e.target.closest('[data-action]');
