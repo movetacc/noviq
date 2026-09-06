@@ -11,5 +11,5 @@ if not exist node_modules (
   call npm install
   if errorlevel 1 exit /b 1
 )
-echo Starting NOVIQ Living Enterprise City v8...
+echo Starting NOVIQ Living Enterprise City v6...
 call npm start
