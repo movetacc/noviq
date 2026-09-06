@@ -327,6 +327,24 @@ async function salesDirectorDecide(context,offer,kpi){
  const r=await ai(system,user,'best');
  return r.json||{action:'proceed',target_offer_id:null,discount_pct:0,reasoning:'AI unavailable — proceeding with current offer unchanged.'};
 }
+async function apifySearch(textQuery){
+ const token=cfg('APIFY_API_TOKEN'); if(!token) throw new Error('APIFY_API_TOKEN missing');
+ const actor=cfg('APIFY_ACTOR_ID')||'compass/crawler-google-places';
+ const actorPath=actor.split('/').map(encodeURIComponent).join('~');
+ const maxResults=Math.min(100,Number(cfg('APIFY_MAX_RESULTS')||20));
+ const body={searchStringsArray:[textQuery],maxCrawledPlacesPerSearch:maxResults,language:'en'};
+ const r=await request(`https://api.apify.com/v2/acts/${actorPath}/run-sync-get-dataset-items?token=${encodeURIComponent(token)}`,{method:'POST',headers:{'Content-Type':'application/json'}},body);
+ if(r.status>=300) throw new Error(`Apify error ${r.status}: ${JSON.stringify(r.data).slice(0,500)}`);
+ const items=Array.isArray(r.data)?r.data:[];
+ // Field names vary slightly by actor/version, so we accept a few common aliases rather than
+ // hard-coding one exact schema.
+ return items.map(x=>({
+  name:x.title||x.name||x.businessName||'',
+  website:x.website||x.url||x.webSite||'',
+  phone:x.phone||x.phoneUnformatted||x.phoneNumber||'',
+  industry:x.categoryName||x.category||(Array.isArray(x.categories)?x.categories.join(','):'')
+ })).filter(x=>x.name);
+}
 async function placesSearch(textQuery){
  const key=cfg('GOOGLE_PLACES_API_KEY'); if(!key) throw new Error('GOOGLE_PLACES_API_KEY missing');
  const body={textQuery,pageSize:Math.min(20,Number(cfg('PLACES_PAGE_SIZE')||20))};
@@ -334,15 +352,27 @@ async function placesSearch(textQuery){
  const r=await request('https://places.googleapis.com/v1/places:searchText',{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':key,'X-Goog-FieldMask':'places.id,places.displayName,places.formattedAddress,places.websiteUri,places.nationalPhoneNumber,places.businessStatus,places.types'}},body);
  if(r.status>=300) throw new Error(JSON.stringify(r.data)); return r.data?.places||[];
 }
+// Lead discovery prefers Apify (no business-verification gate, unlike Google Places).
+// Google Places stays supported as a fallback if that key is configured instead/also.
 async function discoverLeads(query){
- const places=await placesSearch(query); let added=0;
- for(const x of places){
-  const name=x.displayName?.text||''; const website=x.websiteUri||'';
+ let normalized;
+ if(cfg('APIFY_API_TOKEN')){
+  normalized=await apifySearch(query);
+ } else if(cfg('GOOGLE_PLACES_API_KEY')){
+  const places=await placesSearch(query);
+  normalized=places.map(x=>({name:x.displayName?.text||'',website:x.websiteUri||'',phone:x.nationalPhoneNumber||'',industry:(x.types||[]).join(',')}));
+ } else {
+  throw new Error('No lead-discovery provider configured — set APIFY_API_TOKEN (recommended) or GOOGLE_PLACES_API_KEY');
+ }
+ const source=cfg('APIFY_API_TOKEN')?'apify':'google_places';
+ let added=0;
+ for(const x of normalized){
+  const name=x.name; if(!name) continue; const website=x.website||'';
   const ex=website?await dbGet('SELECT id FROM leads WHERE website=?',[website]):await dbGet('SELECT id FROM leads WHERE company=?',[name]);
   if(ex) continue;
-  await dbRun(`INSERT INTO leads VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,[id('lead'),name,'',name,website,(x.types||[]).join(','),'new',0,'','google_places',null,null,0,now()]); added++;
+  await dbRun(`INSERT INTO leads VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,[id('lead'),name,'',name,website,x.industry||'','new',0,'',source,null,null,0,now()]); added++;
  }
- return {found:places.length,added};
+ return {found:normalized.length,added};
 }
 async function enrichLeadEmail(lead){
  const key=cfg('HUNTER_API_KEY'); if(!key||!lead.website) return null;
@@ -612,8 +642,8 @@ app.get('/api/settings',async(req,res)=>{const keys=['primary_goal','autonomy_mo
 app.post('/api/discover',async(req,res)=>{try{const r=await discoverLeads(req.body.query||cfg('PLACES_DEFAULT_QUERY')||'roofing companies in my area');res.json({ok:true,...r})}catch(e){res.status(400).json({error:String(e)})}});
 app.post('/api/enrich',async(req,res)=>{try{const l=await dbGet('SELECT * FROM leads WHERE id=?',[req.body.lead_id]);if(!l)return res.status(404).json({error:'lead_not_found'});res.json({ok:true,email:await enrichLeadEmail(l)})}catch(e){res.status(400).json({error:String(e)})}});
 app.post('/api/outreach/prepare',async(req,res)=>{try{res.json({ok:true,...await prepareCampaign(req.body.offer_id)})}catch(e){res.status(400).json({error:String(e)})}});
-app.post('/api/test-connections',async(req,res)=>{const out={openrouter:!!cfg('OPENROUTER_API_KEY'),square:!!cfg('SQUARE_ACCESS_TOKEN')&&!!cfg('SQUARE_LOCATION_ID'),smtp:!!cfg('SMTP_HOST')&&!!cfg('SMTP_USER')&&!!cfg('SMTP_PASS'),googlePlaces:!!cfg('GOOGLE_PLACES_API_KEY'),hunter:!!cfg('HUNTER_API_KEY'),wordpress:!!cfg('WP_BASE_URL')&&!!cfg('WP_USERNAME')&&!!cfg('WP_APP_PASSWORD'),woocommerce:!!cfg('WC_BASE_URL')&&!!cfg('WC_CONSUMER_KEY')&&!!cfg('WC_CONSUMER_SECRET'),calcom:!!cfg('CALCOM_API_KEY')};res.json(out)});
-app.get('/api/state',async(req,res)=>{const [v,a,t,l,o,p,e]=await Promise.all([dbAll('SELECT * FROM ventures'),dbAll('SELECT * FROM agents ORDER BY role DESC,name'),dbAll('SELECT status,COUNT(*) c FROM tasks GROUP BY status'),dbAll('SELECT * FROM ledger ORDER BY created_at DESC LIMIT 100'),dbAll('SELECT status,COUNT(*) c FROM outreach GROUP BY status'),dbAll('SELECT * FROM payments ORDER BY created_at DESC LIMIT 50'),dbAll('SELECT * FROM events ORDER BY created_at DESC LIMIT 40')]);res.json({startedAt,stopped,ventures:v,agents:a,tasks:t,ledger:l,outreach:o,payments:p,events:e,connections:{openrouter:!!cfg('OPENROUTER_API_KEY'),square:!!cfg('SQUARE_ACCESS_TOKEN'),smtp:!!cfg('SMTP_USER')&&!!cfg('SMTP_PASS'),wordpress:!!cfg('WP_BASE_URL'),woocommerce:!!cfg('WC_BASE_URL'),calcom:!!cfg('CALCOM_API_KEY'),googlePlaces:!!cfg('GOOGLE_PLACES_API_KEY'),hunter:!!cfg('HUNTER_API_KEY')}})});
+app.post('/api/test-connections',async(req,res)=>{const out={openrouter:!!cfg('OPENROUTER_API_KEY'),square:!!cfg('SQUARE_ACCESS_TOKEN')&&!!cfg('SQUARE_LOCATION_ID'),smtp:!!cfg('SMTP_HOST')&&!!cfg('SMTP_USER')&&!!cfg('SMTP_PASS'),apify:!!cfg('APIFY_API_TOKEN'),googlePlaces:!!cfg('GOOGLE_PLACES_API_KEY'),hunter:!!cfg('HUNTER_API_KEY'),wordpress:!!cfg('WP_BASE_URL')&&!!cfg('WP_USERNAME')&&!!cfg('WP_APP_PASSWORD'),woocommerce:!!cfg('WC_BASE_URL')&&!!cfg('WC_CONSUMER_KEY')&&!!cfg('WC_CONSUMER_SECRET'),calcom:!!cfg('CALCOM_API_KEY')};res.json(out)});
+app.get('/api/state',async(req,res)=>{const [v,a,t,l,o,p,e]=await Promise.all([dbAll('SELECT * FROM ventures'),dbAll('SELECT * FROM agents ORDER BY role DESC,name'),dbAll('SELECT status,COUNT(*) c FROM tasks GROUP BY status'),dbAll('SELECT * FROM ledger ORDER BY created_at DESC LIMIT 100'),dbAll('SELECT status,COUNT(*) c FROM outreach GROUP BY status'),dbAll('SELECT * FROM payments ORDER BY created_at DESC LIMIT 50'),dbAll('SELECT * FROM events ORDER BY created_at DESC LIMIT 40')]);res.json({startedAt,stopped,ventures:v,agents:a,tasks:t,ledger:l,outreach:o,payments:p,events:e,connections:{openrouter:!!cfg('OPENROUTER_API_KEY'),square:!!cfg('SQUARE_ACCESS_TOKEN'),smtp:!!cfg('SMTP_USER')&&!!cfg('SMTP_PASS'),wordpress:!!cfg('WP_BASE_URL'),woocommerce:!!cfg('WC_BASE_URL'),calcom:!!cfg('CALCOM_API_KEY'),apify:!!cfg('APIFY_API_TOKEN'),googlePlaces:!!cfg('GOOGLE_PLACES_API_KEY'),hunter:!!cfg('HUNTER_API_KEY')}})});
 app.get('/api/leads',async(req,res)=>res.json(await dbAll('SELECT * FROM leads ORDER BY created_at DESC')));
 // Agent Academy — Skill Matrix
 app.get('/api/academy',async(req,res)=>{const agents=await dbAll(`SELECT a.id,a.name,a.role,a.department_id,d.name department,a.level,a.academy_score,a.academy_rank,a.skill_matrix,a.tasks,a.successes FROM agents a JOIN departments d ON d.id=a.department_id WHERE a.role='worker' ORDER BY a.academy_score DESC`);res.json(agents.map(a=>({...a,skill_matrix:parse(a.skill_matrix,{})})))});
@@ -635,7 +665,7 @@ app.post('/api/goals',async(req,res)=>{await dbRun(`INSERT OR REPLACE INTO setti
 app.post('/api/control',async(req,res)=>{const a=req.body.action;if(a==='stop')stopped=true;if(a==='resume')stopped=false;if(a==='cycle')await Promise.all([strategyCycle(),managerCycle(),workerCycle(),outreachCycle(),followupCycle(),salesReactionCycle(),fulfillmentCycle(),evaluateAgents(),snapshotMetrics()]);if(a==='scanIntelligence')await worldIntelligenceScan();res.json({ok:true,stopped})});
 app.get('/api/approvals',async(req,res)=>res.json(await dbAll(`SELECT a.*,t.title FROM approvals a LEFT JOIN tasks t ON t.id=a.task_id WHERE a.status='pending' ORDER BY a.created_at`)));
 app.post('/api/approvals/:id',async(req,res)=>{const ap=await dbGet('SELECT * FROM approvals WHERE id=?',[req.params.id]);if(!ap)return res.status(404).json({error:'not_found'});if(req.body.decision==='approve'){await dbRun(`UPDATE approvals SET status='approved',decided_at=?,decision=? WHERE id=?`,[now(),'approve',ap.id]);const t=await dbGet('SELECT * FROM tasks WHERE id=?',[ap.task_id]);if(t){await dbRun(`UPDATE tasks SET status='queued' WHERE id=?`,[t.id]);await runTask({...t,status:'queued'})}}else{await dbRun(`UPDATE approvals SET status='rejected',decided_at=?,decision=? WHERE id=?`,[now(),'reject',ap.id]);await dbRun(`UPDATE tasks SET status='cancelled' WHERE id=?`,[ap.task_id])}res.json({ok:true})});
-app.get('/api/health',async(req,res)=>{const checks={discord:!!cfg('DISCORD_WEBHOOK_URL')||!!cfg('DISCORD_PUBLIC_KEY'),openrouter:!!cfg('OPENROUTER_API_KEY'),square:!!cfg('SQUARE_ACCESS_TOKEN')&&!!cfg('SQUARE_LOCATION_ID'),smtp:!!cfg('SMTP_USER')&&!!cfg('SMTP_PASS'),places:!!cfg('GOOGLE_PLACES_API_KEY'),hunter:!!cfg('HUNTER_API_KEY'),fulfillment:!!cfg('FULFILLMENT_WEBHOOK_URL')};const queued=await dbGet(`SELECT COUNT(*) c FROM tasks WHERE status='queued'`);const failed=await dbGet(`SELECT COUNT(*) c FROM tasks WHERE status='failed'`);res.json({ok:true,node:process.version,startedAt,stopped,db:true,queuedTasks:Number(queued?.c||0),failedTasks:Number(failed?.c||0),connections:checks,autonomy:{paymentLinks:cfg('NOVIQ_ALLOW_AUTONOMOUS_PAYMENT_LINKS')==='true',externalApproval:cfg('NOVIQ_REQUIRE_APPROVAL_FOR_EXTERNAL_ACTIONS')!=='false'}})});
+app.get('/api/health',async(req,res)=>{const checks={discord:!!cfg('DISCORD_WEBHOOK_URL')||!!cfg('DISCORD_PUBLIC_KEY'),openrouter:!!cfg('OPENROUTER_API_KEY'),square:!!cfg('SQUARE_ACCESS_TOKEN')&&!!cfg('SQUARE_LOCATION_ID'),smtp:!!cfg('SMTP_USER')&&!!cfg('SMTP_PASS'),places:!!cfg('APIFY_API_TOKEN')||!!cfg('GOOGLE_PLACES_API_KEY'),hunter:!!cfg('HUNTER_API_KEY'),fulfillment:!!cfg('FULFILLMENT_WEBHOOK_URL')};const queued=await dbGet(`SELECT COUNT(*) c FROM tasks WHERE status='queued'`);const failed=await dbGet(`SELECT COUNT(*) c FROM tasks WHERE status='failed'`);res.json({ok:true,node:process.version,startedAt,stopped,db:true,queuedTasks:Number(queued?.c||0),failedTasks:Number(failed?.c||0),connections:checks,autonomy:{paymentLinks:cfg('NOVIQ_ALLOW_AUTONOMOUS_PAYMENT_LINKS')==='true',externalApproval:cfg('NOVIQ_REQUIRE_APPROVAL_FOR_EXTERNAL_ACTIONS')!=='false'}})});
 
 // Generic inbound event bridge. Use Gmail/Outlook/n8n/Make/Zapier or your own mail receiver to POST normalized replies here.
 app.post('/webhooks/inbound',express.json({limit:'100kb'}),async(req,res)=>{try{const x=req.body||{};const externalId=String(x.id||x.message_id||crypto.createHash('sha256').update(JSON.stringify(x)).digest('hex'));if(await dbGet('SELECT id FROM inbound_messages WHERE external_id=?',[externalId]))return res.json({ok:true,duplicate:true});let lead=x.lead_id?await dbGet('SELECT * FROM leads WHERE id=?',[x.lead_id]):null;if(!lead&&x.from)lead=await dbGet('SELECT * FROM leads WHERE lower(email)=lower(?)',[String(x.from).trim()]);if(!lead)return res.status(404).json({error:'lead_not_found'});const body=String(x.body||x.text||'').slice(0,10000);await dbRun(`INSERT INTO inbound_messages VALUES(?,?,?,?,?,?,?,?,?)`,[id('in'),externalId,lead.id,x.channel||'email',String(x.from||lead.email),String(x.subject||''),body,0,now()]);const optout=/(unsubscribe|remove me|stop emailing|do not contact|not interested)/i.test(body);await dbRun(`UPDATE leads SET status=?,unsubscribed=?,notes=?,next_followup=? WHERE id=?`,[optout?'unsubscribed':'replied',optout?1:0,body,optout?null:now(),lead.id]);await event('inbound.received',{leadId:lead.id,externalId,optout});if(!optout)setImmediate(()=>salesReactionCycle().catch(console.error));res.json({ok:true,leadId:lead.id,optout});}catch(e){res.status(400).json({error:String(e.message||e)})}});
