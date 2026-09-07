@@ -22,9 +22,34 @@ html,body{margin:0;padding:0;background:#05030f;overflow:hidden;font-family:'Cou
 .worker-label{position:absolute;font-size:9px;letter-spacing:.5px;text-align:center;white-space:nowrap;transform:translate(-50%,-100%);pointer-events:none}
 .worker-label .nm{font-weight:bold}
 .worker-label .st{opacity:.8}
+.start-screen{position:fixed;inset:0;z-index:20;background:#05030f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px}
+.start-screen h1{margin:0;letter-spacing:6px;font-size:28px;color:#7ee8ff;text-shadow:0 0 16px #7ee8ff88}
+.start-screen p{margin:0;color:#8b7fc9;letter-spacing:2px;font-size:11px}
+.start-btn{border:1px solid #7ee8ff;border-radius:10px;padding:14px 28px;background:#0a0620;color:#7ee8ff;font-family:'Courier New',monospace;font-size:13px;letter-spacing:3px}
+.login-overlay{position:fixed;inset:0;z-index:30;background:#000c;display:flex;align-items:center;justify-content:center;padding:20px}
+.login-box{background:#0a0620;border:1px solid #7ee8ff55;border-radius:14px;padding:22px;width:100%;max-width:320px}
+.login-box .lt{font-size:13px;letter-spacing:2px;color:#7ee8ff;margin-bottom:14px}
+.login-box input{width:100%;padding:12px;border-radius:8px;border:1px solid #315878;background:#070b12;color:#eaf7ff;font-size:16px;margin-bottom:12px;font-family:'Courier New',monospace}
+.login-box .row{display:flex;gap:10px;justify-content:flex-end}
+.login-box button{border:1px solid #7ee8ff88;border-radius:8px;padding:8px 16px;background:transparent;color:#7ee8ff;font-family:'Courier New',monospace}
+.login-err{color:#ff7ecb;font-size:11px;margin-bottom:10px;min-height:14px}
 </style>
 </head>
 <body>
+<div class="start-screen" id="start-screen">
+ <h1>NOVIQ</h1>
+ <p>AUTONOMOUS ENTERPRISE CITY</p>
+ <button class="start-btn" id="start-btn">ENTER CITY</button>
+</div>
+<div class="login-overlay" id="login-overlay" hidden>
+ <div class="login-box">
+  <div class="lt">NOVIQ OWNER LOGIN</div>
+  <div class="login-err" id="login-err"></div>
+  <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+  <input id="login-totp" type="text" placeholder="2FA code (if enabled)" inputmode="numeric">
+  <div class="row"><button id="login-cancel">CANCEL</button><button id="login-submit">LOG IN</button></div>
+ </div>
+</div>
 <div id="canvas-wrap"></div>
 <div class="hud badge" id="badge" style="position:absolute">NOVIQ<small id="badge-sub">LOADING CITY…</small></div>
 <div class="hud stats" style="position:absolute" id="stats">
@@ -52,15 +77,38 @@ const STATUS = ['acting','learning','idle'];
 const STATUS_COLOR = {acting:0x79f2b0, learning:0xc99dff, idle:0x8fa4bb};
 const PALETTE = [0x7ee8ff,0xc99dff,0xff7ecb,0x79f2b0,0xffd479,0xff9d5c,0x7ee8ff,0xff7ecb,0xc99dff,0x79f2b0];
 
+function showLoginModal(){
+ return new Promise((resolve,reject)=>{
+  const overlay = document.getElementById('login-overlay');
+  const errEl = document.getElementById('login-err');
+  const passEl = document.getElementById('login-pass');
+  const totpEl = document.getElementById('login-totp');
+  errEl.textContent = '';
+  passEl.value = ''; totpEl.value = '';
+  overlay.hidden = false;
+  setTimeout(()=>passEl.focus(), 50);
+  const submit = document.getElementById('login-submit');
+  const cancel = document.getElementById('login-cancel');
+  const cleanup = ()=>{ submit.onclick=null; cancel.onclick=null; passEl.onkeydown=null; };
+  const doSubmit = async()=>{
+   const body = {password:passEl.value};
+   if(totpEl.value) body.totp = totpEl.value;
+   try{
+    const lr = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!lr.ok){ const e = await lr.json().catch(()=>({})); errEl.textContent = e.error||'Login failed — try again.'; return; }
+    overlay.hidden = true; cleanup(); resolve();
+   }catch(e){ errEl.textContent = String(e.message||e); }
+  };
+  submit.onclick = doSubmit;
+  passEl.onkeydown = (e)=>{ if(e.key==='Enter') doSubmit(); };
+  cancel.onclick = ()=>{ overlay.hidden=true; cleanup(); reject(new Error('Login cancelled')); };
+ });
+}
+
 async function apiFetch(u,o={}){
  const r = await fetch(u,{headers:{'Content-Type':'application/json',...(o.headers||{})},...o});
  if(r.status===401){
-  const p = prompt('NOVIQ owner password');
-  if(p===null) throw new Error('Login required');
-  const t = prompt('2FA code (leave blank if not enabled)');
-  const body = {password:p}; if(t) body.totp=t;
-  const lr = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(!lr.ok){ const e = await lr.json().catch(()=>({})); throw new Error(e.error||'Login failed'); }
+  await showLoginModal();
   return apiFetch(u,o);
  }
  return r.json();
@@ -483,16 +531,19 @@ function animate(time, dt){
  composer.render();
 }
 
-(async()=>{
- try{
-  ventures = await loadRealVentures();
-  positions = layoutPositions(ventures.length);
-  buildScene();
-  document.getElementById('tap-hint').style.opacity = ventures.length ? '1' : '0';
- }catch(e){
-  document.getElementById('badge-sub').textContent = 'LOAD FAILED';
-  showCaption('ERROR', String(e.message||e));
- }
+(function(){
+ document.getElementById('start-btn').addEventListener('click', async()=>{
+  document.getElementById('start-screen').style.display = 'none';
+  try{
+   ventures = await loadRealVentures();
+   positions = layoutPositions(ventures.length);
+   buildScene();
+   document.getElementById('tap-hint').style.opacity = ventures.length ? '1' : '0';
+  }catch(e){
+   document.getElementById('badge-sub').textContent = 'LOAD FAILED';
+   showCaption('ERROR', String(e.message||e));
+  }
+ }, {once:true});
 })();
 
 requestAnimationFrame(animate);
