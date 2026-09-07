@@ -26,7 +26,7 @@ html,body{margin:0;padding:0;background:#05030f;overflow:hidden;font-family:'Cou
 </head>
 <body>
 <div id="canvas-wrap"></div>
-<div class="hud badge" id="badge" style="position:absolute">NOVIQ<small id="badge-sub">AUTONOMOUS CITY · 20 CITIZENS</small></div>
+<div class="hud badge" id="badge" style="position:absolute">NOVIQ<small id="badge-sub">LOADING CITY…</small></div>
 <div class="hud stats" style="position:absolute" id="stats">
  <div class="day">DAY 1</div>
  <div class="acting"><span class="n" id="s-acting">0</span> acting</div>
@@ -50,25 +50,66 @@ html,body{margin:0;padding:0;background:#05030f;overflow:hidden;font-family:'Cou
 <script>
 const STATUS = ['acting','learning','idle'];
 const STATUS_COLOR = {acting:0x79f2b0, learning:0xc99dff, idle:0x8fa4bb};
+const PALETTE = [0x7ee8ff,0xc99dff,0xff7ecb,0x79f2b0,0xffd479,0xff9d5c,0x7ee8ff,0xff7ecb,0xc99dff,0x79f2b0];
 
-const ventures = [
- {name:'Xcessories Shop', desc:'E-commerce storefront.', color:0x7ee8ff, h:2.8,
-  agents:[{name:'DAX',role:'Listings',status:'acting'},{name:'MERI',role:'Pricing',status:'acting'},{name:'ORIN',role:'Support',status:'learning'},{name:'FYN',role:'Inventory',status:'idle'}]},
- {name:'Lumiara', desc:'Custom LED signs.', color:0xc99dff, h:4.0,
-  agents:[{name:'GLOW',role:'Design',status:'acting'},{name:'PRISM',role:'Quoting',status:'learning'},{name:'NEON',role:'Production',status:'acting'}]},
- {name:'Content City', desc:'Faceless channels.', color:0xff7ecb, h:5.2,
-  agents:[{name:'SCRIPT',role:'Writer',status:'acting'},{name:'HOOK',role:'Research',status:'acting'},{name:'VOX',role:'Voice',status:'acting'},{name:'CUT',role:'Editor',status:'learning'},{name:'THUMB',role:'Thumbnails',status:'acting'},{name:'SEO',role:'Optimizer',status:'idle'}]},
- {name:'Wholesale RE', desc:'Property leads.', color:0x79f2b0, h:2.0,
-  agents:[{name:'DEED',role:'Research',status:'learning'},{name:'QUAL',role:'Qualifier',status:'idle'}]},
- {name:'Crypto Desk', desc:'Trading signals.', color:0xffd479, h:1.6,
-  agents:[{name:'TICK',role:'Signals',status:'acting'},{name:'RISK',role:'Risk',status:'idle'}]},
- {name:'The Academy', desc:'Every agent trains here.', color:0x7ee8ff, h:2.5,
-  agents:[{name:'TEACH',role:'Trainer',status:'acting'}]},
- {name:'Supply Shop', desc:'Vendor pipeline.', color:0xff9d5c, h:1.3,
-  agents:[{name:'CRATE',role:'Sourcing',status:'learning'},{name:'HAUL',role:'Logistics',status:'acting'}]},
- {name:'Control Room', desc:'Certified agents oversee the rest.', color:0xff7ecb, h:3.3,
-  agents:[{name:'CINDER',role:'Overseer',status:'acting'}]}
-];
+async function apiFetch(u,o={}){
+ const r = await fetch(u,{headers:{'Content-Type':'application/json',...(o.headers||{})},...o});
+ if(r.status===401){
+  const p = prompt('NOVIQ owner password');
+  if(p===null) throw new Error('Login required');
+  const t = prompt('2FA code (leave blank if not enabled)');
+  const body = {password:p}; if(t) body.totp=t;
+  const lr = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!lr.ok){ const e = await lr.json().catch(()=>({})); throw new Error(e.error||'Login failed'); }
+  return apiFetch(u,o);
+ }
+ return r.json();
+}
+
+function statusForAgent(a){
+ if(a.tasks>0 && a.academy_score>=55) return 'acting';
+ if(a.tasks>0 || (a.skill_matrix && Object.keys(a.skill_matrix).length)) return 'learning';
+ return 'idle';
+}
+
+async function loadRealVentures(){
+ const academy = await apiFetch('/api/academy'); // [{id,name,role,department,level,academy_score,academy_rank,skill_matrix,tasks,successes}]
+ const byDept = {};
+ academy.forEach(a=>{
+  const dept = a.department || 'Unassigned';
+  if(!byDept[dept]) byDept[dept] = [];
+  byDept[dept].push({
+   name: (a.name||'?').split(' ')[0].toUpperCase(),
+   role: a.role==='worker' ? (a.level||'worker') : a.role,
+   status: statusForAgent(a),
+   tasks: a.tasks||0,
+   score: a.academy_score||0
+  });
+ });
+ const deptNames = Object.keys(byDept);
+ if(!deptNames.length) return [{name:'No departments yet', desc:'Run RUN CYCLE or import leads to populate the Academy.', color:0x7ee8ff, h:1.5, agents:[]}];
+ return deptNames.map((name,i)=>({
+  name,
+  desc: `${byDept[name].length} agent(s) in ${name}.`,
+  color: PALETTE[i % PALETTE.length],
+  h: 1.4 + Math.min(4, byDept[name].reduce((s,a)=>s+a.tasks,0)*0.15) + byDept[name].length*0.25,
+  agents: byDept[name]
+ }));
+}
+
+function layoutPositions(n){
+ const pos = [];
+ const cols = Math.ceil(Math.sqrt(n));
+ const spacing = 3.2;
+ for(let i=0;i<n;i++){
+  const col = i % cols, row = Math.floor(i/cols);
+  pos.push([(col-(cols-1)/2)*spacing, (row-(Math.ceil(n/cols)-1)/2)*spacing]);
+ }
+ return pos;
+}
+
+let ventures = [];
+let positions = [];
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x05030f, 0.05);
@@ -112,7 +153,6 @@ scene.add(dl);
 
 const buildingGroup = new THREE.Group();
 const labelWrap = document.getElementById('worker-labels');
-const positions = [[-4.5,-2.5],[-1.8,-3.8],[2.2,-1.8],[-3.5,2.2],[0.6,3.2],[3.8,1.2],[-6,0.5],[5.5,-0.5]];
 const buildingMeshes = [];
 
 function hexTile(){
@@ -146,6 +186,8 @@ function makeWindowTexture(color){
  return new THREE.CanvasTexture(c);
 }
 
+let totalCitizens = 0;
+function buildScene(){
 ventures.forEach((v,i)=>{
  const [px,pz] = positions[i];
  const w=1.3,depth=1.3,h=v.h;
@@ -235,6 +277,17 @@ ventures.forEach((v,i)=>{
  v._interior = interior;
 });
 scene.add(buildingGroup);
+for(let i=0;i<Math.max(14, ventures.reduce((s,v)=>s+v.agents.length,0));i++){
+ const dot = new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8), new THREE.MeshBasicMaterial({color:0x79f2b0}));
+ const [px,pz] = positions[i % positions.length];
+ dot.position.set(px + (Math.random()-0.5)*2, 0.1, pz + (Math.random()-0.5)*2);
+ agentGroup.add(dot);
+ cityAgents.push({mesh:dot, t:Math.random()*10, speed:0.3+Math.random()*0.3, base:[px,pz]});
+}
+totalCitizens = ventures.reduce((s,v)=>s+v.agents.length,0);
+document.getElementById('badge-sub').textContent = `AUTONOMOUS CITY · ${totalCitizens} CITIZENS`;
+randomizeStats();
+}
 
 const orbGroup = new THREE.Group();
 const orbColors = [0xff7ecb,0x7ee8ff,0x79f2b0,0xc99dff,0xffd479];
@@ -251,13 +304,6 @@ scene.add(orbGroup);
 
 const agentGroup = new THREE.Group();
 const cityAgents = [];
-for(let i=0;i<14;i++){
- const dot = new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8), new THREE.MeshBasicMaterial({color:0x79f2b0}));
- const [px,pz] = positions[i % positions.length];
- dot.position.set(px + (Math.random()-0.5)*2, 0.1, pz + (Math.random()-0.5)*2);
- agentGroup.add(dot);
- cityAgents.push({mesh:dot, t:Math.random()*10, speed:0.3+Math.random()*0.3, base:[px,pz]});
-}
 scene.add(agentGroup);
 
 // ── state machine: city <-> inside a building ──
@@ -365,7 +411,6 @@ function randomizeStats(){
  document.getElementById('s-idle').textContent = idle;
  document.getElementById('s-offline').textContent = 0;
 }
-randomizeStats();
 
 const captions = [
  ['SYSTEM', 'Then I let them run it.'],
@@ -408,7 +453,7 @@ function animate(time, dt){
     activeVenture=null;
     document.getElementById('tap-hint').style.opacity='1';
     document.getElementById('back-btn').classList.remove('show');
-    document.getElementById('badge-sub').textContent='AUTONOMOUS CITY · 20 CITIZENS';
+    document.getElementById('badge-sub').textContent=`AUTONOMOUS CITY · ${totalCitizens} CITIZENS`;
     document.getElementById('badge').style.color='#7ee8ff';
    }
   }
@@ -437,6 +482,19 @@ function animate(time, dt){
  updateLabels();
  composer.render();
 }
+
+(async()=>{
+ try{
+  ventures = await loadRealVentures();
+  positions = layoutPositions(ventures.length);
+  buildScene();
+  document.getElementById('tap-hint').style.opacity = ventures.length ? '1' : '0';
+ }catch(e){
+  document.getElementById('badge-sub').textContent = 'LOAD FAILED';
+  showCaption('ERROR', String(e.message||e));
+ }
+})();
+
 requestAnimationFrame(animate);
 
 window.addEventListener('resize', ()=>{
